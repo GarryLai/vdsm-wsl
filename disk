@@ -1,0 +1,8 @@
+#!/bin/bash
+
+echo "Input size increase to disk file (GiB):"
+read INPUT
+
+truncate -s 5G ./storage/system.img
+truncate -s "+${INPUT}G" ./storage/data.img
+truncate -s ">6G" ./storage/data.img

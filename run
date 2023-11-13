@@ -1,0 +1,73 @@
+#!/bin/bash
+set -e
+ulimit -s unlimited
+
+source config
+
+swapoff -a
+
+PORT1=12345
+PORT2=2210
+
+HOSTFWD=""
+for i in ${TCP_PORTS[@]}
+do
+	HOSTFWD+=",hostfwd=tcp::${i}-:${i}"
+done
+for i in ${UDP_PORTS[@]}
+do
+	HOSTFWD+=",hostfwd=udp::${i}-:${i}"
+done
+
+args=(
+-nographic -nodefaults -boot strict=on
+-display none
+
+# Machine
+-smp ${CPU_CORE},sockets=1,dies=1,cores=${CPU_CORE},threads=1
+-m ${RAM}
+-machine pc-i440fx-2.2,usb=off,dump-guest-core=off,hpet=off,accel=kvm -enable-kvm -cpu host
+-rtc base=$(date -u --rfc-3339=seconds | sed 's/ /T/'),clock=vm,driftfix=slew
+-global kvm-pit.lost_tick_policy=delay
+
+# Mointer
+-monitor telnet:localhost:7100,server,nowait,nodelay -serial mon:stdio
+
+# USB
+-device piix3-usb-uhci,id=usb,bus=pci.0,addr=0x1.0x2
+
+# Virtio Serial
+-device virtio-serial-pci,id=virtio-serial0,bus=pci.0,addr=0x3 -chardev pty,id=charserial0
+-device isa-serial,chardev=charserial0,id=serial0 -chardev socket,id=charchannel0,host=127.0.0.1,port=${PORT1},reconnect=10
+-device virtserialport,bus=virtio-serial0.0,nr=1,chardev=charchannel0,id=channel0,name=vchannel
+
+# Virtio Balloon
+-device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x4 -object rng-random,id=objrng0,filename=/dev/urandom
+
+# Network Interface
+-netdev user,id=net0${HOSTFWD}
+-device virtio-net-pci,romfile=,netdev=net0,mac=${GUEST_MAC},id=net0
+
+# Boot Drive
+-device virtio-scsi-pci,id=hw-synoboot,bus=pci.0,addr=0xa
+-drive file=storage/boot.img,if=none,id=drive-synoboot,format=raw,cache=none,aio=threads,discard=on,detect-zeroes=on
+-device scsi-hd,bus=hw-synoboot.0,channel=0,scsi-id=0,lun=0,drive=drive-synoboot,id=synoboot0,bootindex=1
+
+# System Drive
+-device virtio-scsi-pci,id=hw-synosys,bus=pci.0,addr=0xb
+-drive file=storage/system.img,if=none,id=drive-synosys,format=raw,cache=none,aio=threads,discard=on,detect-zeroes=on
+-device scsi-hd,bus=hw-synosys.0,channel=0,scsi-id=0,lun=0,drive=drive-synosys,id=synosys0,bootindex=2
+
+# Data Drive
+-device virtio-scsi-pci,id=hw-userdata,bus=pci.0,addr=0xc
+-drive file=storage/data.img,if=none,id=drive-userdata,format=raw,cache=none,aio=threads,discard=on,detect-zeroes=on
+-device scsi-hd,bus=hw-userdata.0,channel=0,scsi-id=0,lun=0,drive=drive-userdata,id=userdata0,bootindex=3
+
+#  VirtIO RNG
+-device virtio-rng-pci,rng=objrng0,id=rng0,bus=pci.0,addr=0x1c
+)
+
+./host.bin -addr="127.0.0.1:${PORT1}" -api="127.0.0.1:${PORT2}" -cpu=${CPU_CORE} -cpu_arch="$(lscpu | sed -nr '/Model name/ s/.*:\s*(.*) @ .*/\1/p'),," \
+-mac=${HOST_MAC} -model=${HOST_MODEL} -hostsn=${HOST_SN} -guestsn=${GUEST_SN} &> /dev/null &
+
+qemu-system-x86_64 "${args[@]}"
